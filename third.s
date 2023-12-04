@@ -47,6 +47,22 @@ word_buffer:
 mode:                           #zero for runtime, non-zero for compile time
         .skip 8, 0
 
+        ## lines are null terminated, and cannot occur mid-word
+line_dry_dock:                  #where you build a new line
+        .skip 4096, 0
+
+line_dd_offset:                 #where are we in the line we are building
+        .skip 8, 0
+
+line_buffer:                    #the line being parsed
+        .skip 4096, 0
+
+line_offset:                    #where are we in the line
+        .skip 8, 0
+
+line_ready:                     #is the consumer ready for the commit to happen?
+        .skip 8, 0
+
         .data
 succ_text:
         .anciz "ok.\n"
@@ -57,7 +73,6 @@ succ_text:
 
 panic:
         j panic
-
 
 ### Code for arithmetic
 add_l:
@@ -106,7 +121,7 @@ rem_l:
         rem t2, t1, t2
         sd t2, (sp), 0
         ret
-divr_:                          #quot on top, remainder second
+divr_l:                         #quot on top, remainder second
         ld t1, sp, 0
         ld t2, sp, 8
         div t1, t1, t2
@@ -182,6 +197,7 @@ copy_from_ret_l:                #ret stack to stack, preserve ret
 
 ### code for data stack manipulation
 
+        ## TODO add explicit variable word? seems like a duplicate of create
 variable_addr_l:                # the code for runtime vars
         ld t1, (tp)
         addi t1, t1, 32         #point to current body
@@ -208,7 +224,7 @@ read_l:                         #read word from addr to stack (addr -- val)
 ## the data stack, pushing the address to the stack. Using negative
 ## numbers works for deallocating, but you probably should drop the
 ## pushed value
-alloc_l:
+allot_l:
         ld t1, (sp)
         mv t2, t0
         addi t0, t0, t1
@@ -243,39 +259,108 @@ show_l:                         # (a -- ) print the top of the stack as a number
         sd ra, (fp)
         call output_num
         ld ra, (fp)
-        addi fp, fp, 8          #TODO we can do this on the main stack, and skip some of arithmetic
+        addi fp, fp, 8
         ret
 
-### TODO ct string storage
-### stringprint from NT-ptr (just expose output_string as word)
-### comments (just parens should be fine)
-### re-update baked-in words at the bottom of this file
-###
-### TODO remember to ensure that ra is consitently saved to return stack and not main stack
+show_stack_l:                   # ( -- ) print the stack from the bottom to the top
+        la t1, _FORTH_MEM_MID   # TODO make sure this matches the init
+        subi fp, fp, 8
+        sd ra, (fp)
+ss_loop:
+        ld a0, (t1)
+        call output_num
+        li a1, 0x20             #space
+        call output_char
+        subi t1, t1, 8
+        blt t1, sp, ss_done
+        j ss_loop
+ss_done:
+        ld ra, (fp)
+        addi fp, fp, 8
+        ret
 
-### Macros for text stuff
+show_string_l:                  # ( addr -- ) print a NT string from addr
+        ld a0, (sp)
+        addi sp, sp, 8
+        subi fp, fp, 8
+        sd ra, (fp)
+        call output_string
+        ld ra, (fp)
+        ret
 
-### code aware of the input stream, ie terminal / source code
+        ## CT only. parse a string terminated by a quote. runtime
+        ## semantics is to print said string. String output equiv of
+        ## literal number in def. The parsing requires at least one
+        ## space inside the delimited quotes, before and after the
+        ## intended contents. They (and any contigious spaces) are
+        ## zapped from the printed output.
+compile_string_print_l:
+        la t1, runtime_string_print_l
+        sd t1, (t0)
+        addi t0, t0, 8
+        subi fp, fp, 8
+        sd ra, (fp)
+        li t3, 0x22             #ascii quote
+csp_new_word:
+        call get_word_safe
+        la t1, word_buffer
+csp_loop:
+        lc t2, (t1)
+        beq t2, t3, csp_end_quote
+        sc t2, (t0)
+        addi t0, t0, 1          #copy to def body
+        addi t1, t1, 1
+        beqz t2, csp_new_word
+        j csp_loop
+csp_end_quote:
+        sc x0, (t0)
+        addi t0, t0, 8          #1 regular inc, 7 for rounding up
+        slli t0, t0, 3
+        slri t0, t0, 3          #8 aligned again
+        ld ra, (fp)
+        addi fp, fp, 8
+        ret
 
-        .bss
+        ## so CT version sets us up so that we can inc tp to find a NT string.
+runtime_string_print_l:
+        subi fp, fp, 8
+        sd ra, (fp)
+        addi tp, tp, 8
+        mv a0, tp
+        call output_string
+rsp_skip_loop:
+        lc t1, (tp)
+        addi tp, tp, 1
+        beqz t1, rsp_skip_done
+        j rsp_skip_loop
+rsp_skip_done:
+        addi tp, tp, 6          #7 for rounding, -1 so we don't
+                                #overstep into next word, since we
+                                #want tp to point to the final word
+                                #(with padding)
+        slli t0, t0, 3
+        slri t0, t0, 3          #8 aligned again
+        ld ra, (fp)
+        addi fp, fp, 8
+        ret
 
-        ## lines are null terminated, and cannot occur mid-word
-line_dry_dock:                  #where you build a new line
-        .skip 4096, 0
+comment_l:
+        subi fp, fp, 8
+        sd ra, (fp)
+comment_loop:
+        call get_word_safe
+        la t1, word_buffer
+        lc t1, (t1)
+        li t2, 0x29             #ascii close paren
+        beq t1, t2, comment_done
+        j comment_loop
+comment_done:
+        ld ra, (fp)
+        addi fp, fp, 8
+        ret
 
-line_dd_offset:                 #where are we in the line we are building
-        .skip 8, 0
 
-line_buffer:                    #the line being parsed
-        .skip 4096, 0
-
-line_offset:                    #where are we in the line
-        .skip 8, 0
-
-line_ready:                     #is the consumer ready for the commit to happen?
-        .skip 8, 0
-
-        .text
+### non-word code aware of the input stream, ie terminal code
 
         ## does a length check, copies drydock to buffer, and resets cursor
 commit_line:
@@ -425,14 +510,6 @@ ic_done:
         addi sp, sp, 32
         ret
 
-### TODO you can expect `output_char` and `output_string`, but you
-### should check their calling convention.
-###
-### in general output_char should take char in a1, and output_string
-### an addr of a null-terminated string in a0
-
-### words that need to do input stream stuff
-
         ## returns the current word_buffer length in a0
 current_word_length:
         la t1, word_buffer
@@ -446,6 +523,59 @@ cwl_done:
         sub a0, t1, t2
         addi a0, a0, 1          #space for null
         ret
+
+        ## output a number given in a0 as a string, clobbers a1
+        ##
+        ## we do some stack stuff to reverse the digit order, since
+        ## it's nicer to break down LSD first, but we need to print
+        ## MSD first
+        ##
+        ## this is wasteful in main stack, but I want things to be word aligned
+output_num:
+        subi fp, fp, 24
+        sd ra, (fp)
+        sd s1, (fp), 8
+        sd s2, (fp), 16
+        li s1, 10
+        mv s2, sp               #save original stack location so we know when to stop
+        bgez a0, on_loop
+        ## negative val, emit minus and neg val
+        li a1, 0x2D
+        call output_char
+        neg a0, a0
+on_loop:                        #safely positive, don't worry about signs
+        rem a1, a0, s1          #mod bottom digit
+        addi a1, a1, 0x30       #binary val to ascii val
+        subi sp, sp, 8
+        sd a1, (sp)
+        div a1, a1, s1
+        beqz a1, on_pre_print
+        j on_loop
+on_pre_print:
+        ## the main stack from s2 down to sp has each ascii digit in a word, print and pop
+        mv s1, s2
+        subi s1, s1, 8
+on_print_loop:
+        ld a1, (s1)
+        call output_char
+        subi s1, s1, 8
+        blt s1, sp on_done
+        j on_print_loop
+on_done:
+        mv sp, s2               #pop all at once
+        ld ra, (fp)
+        ld s1, (fp), 8
+        ld s2, (fp), 16
+        addi fp, fp, 24
+        ret
+
+### TODO you can expect `output_char` and `output_string`, but you
+### should check their calling convention.
+###
+### in general output_char should take char in a1, and output_string
+### an addr of a null-terminated string in a0
+
+### words that need to do input stream stuff
 
 create_l:                       # ( -- ), reads name from input,
                                 # creates a definition for it, gives
@@ -532,11 +662,11 @@ semicolon_ct_l:                 #cs for semicolon, undo colon_def_runtime_l
         addi fp, fp, 32
         ret
 
-### central interpretation and execution stuff
+### non-word central interpretation and execution code
 
-## takes two null terminated string pointers in a1, a2, puts 1 in a1
-## if they match, zero otherwise. Nonstandard calling convention to
-## mesh with find. Clobbers both inputs.
+        ## takes two null terminated string pointers in a1, a2, puts 1 in a1
+        ## if they match, zero otherwise. Nonstandard calling convention to
+        ## mesh with find. Clobbers both inputs.
 cmpstr:
         lc t1, (a1)
         lc t2, (a2)
@@ -554,8 +684,8 @@ cmpstr_fail:
         mv a1, x0
         ret
 
-## a0 is a pointer to a null terminated string. Returns the top of the
-## def in a0, or zero if there is none
+        ## a0 is a pointer to a null terminated string. Returns the top of the
+        ## def in a0, or zero if there is none
 find_by_string:
         subi sp, sp, 16
         sd ra, (sp)
@@ -575,48 +705,6 @@ fbs_found:
         ld s1, (sp), 8
         addi sp, sp, 16
         ret
-
-##for the find word. returns the input str and zero on fail, or head
-##of def and 1 on success
-find_l:
-        subi sp, sp, 16
-        sd ra, (sp), 8
-        mv a0, sp
-        call find_by_string
-        ld ra, (sp)
-        addi sp, sp, 8
-        beqz a0, find_fail
-        sd a0, (sp), 8
-        li t1, 1
-        sd t1, (sp)
-        ret
-find_fail:
-        sd x0, (sp)
-        ret
-
-## pop an xt and execute its runtime semantics.
-execute_l:
-        ld t1, (sp)
-        addi sp, sp, 8
-        subi fp, fp, 16
-        sd ra, (fp)
-        sd tp, (fp)
-        addi tp, sp, 8          #tp points to xt on the stack: the "body" that did this call
-        addi t1, t1, 8
-        jalr ra, t1
-        ld ra, (fp)
-        ld tp, (fp)
-        addi fp, fp, 16
-        ret
-
-        ## included in compilation by interpret when you give a literal number
-literal_rt_l:
-        ## examine tp to get the next word baked into defintion, push it, then increment tp
-        addi tp, tp, 8          #next word, compiled value addr
-        subi sp, sp, 8
-        ld t1, (tp)             #baked in literal
-        sd t1, (sp)
-        ret                     #interal tp inc here skips the literal in colon def loop
 
         ## is the current word in the buffer a number? 1 in a0 if so, 0 else
 is_number:
@@ -669,55 +757,57 @@ stn_done:
         mv a0, t5
         ret
 
-        ## output a number given in a0 as a string, clobbers a1
-        ##
-        ## we do some stack stuff to reverse the digit order, since
-        ## it's nicer to break down LSD first, but we need to print
-        ## MSD first
-        ##
-        ## this is wasteful in main stack, but I want things to be word aligned
-output_num:
-        subi fp, fp, 24
-        sd ra, (fp)
-        sd s1, (fp), 8
-        sd s2, (fp), 16
-        li s1, 10
-        mv s2, sp               #save original stack location so we know when to stop
-        bgez a0, on_loop
-        ## negative val, emit minus and neg val
-        li a1, 0x2D
-        call output_char
-        neg a0, a0
-on_loop:                        #safely positive, don't worry about signs
-        rem a1, a0, s1          #mod bottom digit
-        addi a1, a1, 0x30       #binary val to ascii val
+
+### dictionary aware words
+        ##for the find word. returns the input str and zero on fail, or head
+        ##of def and 1 on success
+find_l:
         subi sp, sp, 8
-        sd a1, (sp)
-        div a1, a1, s1
-        beqz a1, on_pre_print
-        j on_loop
-on_pre_print:
-        ## the main stack from s2 down to sp has each ascii digit in a word, print and pop
-        mv s1, s2
-        subi s1, s1, 8
-on_print_loop:
-        ld a1, (s1)
-        call output_char
-        subi s1, s1, 8
-        blt s1, sp on_done
-        j on_print_loop
-on_done:
-        mv sp, s2               #pop all at once
+        subi fp, fp, 8
+        sd ra, (fp), 8
+        mv a0, sp
+        call find_by_string
         ld ra, (fp)
-        ld s1, (fp), 8
-        ld s2, (fp), 16
-        addi fp, fp, 24
+        addi fp, fp, 8
+        beqz a0, find_fail
+        sd a0, (sp), 8
+        li t1, 1
+        sd t1, (sp)
+        ret
+find_fail:
+        sd x0, (sp)
         ret
 
+## pop an xt and execute its runtime semantics.
+execute_l:
+        ld t1, (sp)
+        addi sp, sp, 8
+        subi fp, fp, 16
+        sd ra, (fp)
+        sd tp, (fp)
+        addi tp, sp, 8          #tp points to xt on the stack: the "body" that did this call
+        addi t1, t1, 8
+        jalr ra, t1
+        ld ra, (fp)
+        ld tp, (fp)
+        addi fp, fp, 16
+        ret
 
-## This is the main loop of the interpreter. It doesn't have a natural
-## exit, but it pushes a return address to the return stack so it can
-## be stack unrolled out of
+        ## included in compilation by interpret when you give a literal number
+        ##
+        ## technically not a word, but called by interpret
+literal_rt_l:
+        ## examine tp to get the next word baked into defintion, push it, then increment tp
+        addi tp, tp, 8          #next word, compiled value addr
+        subi sp, sp, 8
+        ld t1, (tp)             #baked in literal
+        sd t1, (sp)
+        ret                     #interal tp inc here skips the literal in colon def loop
+
+### interpreter loop
+        ## This is the main loop of the interpreter. It doesn't have a natural
+        ## exit, but it pushes a return address to the return stack so it can
+        ## be stack unrolled out of
 interpret_entry:
         subi fp, fp, 8
         sd ra, (fp)
@@ -762,6 +852,11 @@ int_num_comptime:
         sd a0, (t0), 8
         addi t0, t0, 16
         j int_loop
+
+### TODO consider adding an abort in addition to panic, so we can just
+### get dumped back to RT interpreter state. This requires stack
+### unrolling, which is a bit beyond what we have now, at least if you
+### want it to preserve successfully defined words.
 
 ### baked initial definitions, These need to be the final thing in the data section
 
@@ -811,9 +906,19 @@ int_num_comptime:
         bake_define "!", write_l, self_insert_l
         bake_define "@", read_l, self_insert_l
 
-        bake_define "allot", alloc_l, self_insert_l
+        bake_define "allot", allot_l, self_insert_l
         bake_define ",", comma_l, self_insert_l
 
-        bake_define "CREATE", create_l, self_insert_l
+        bake_define ".", show_l, self_insert_l
+        bake_define ".s", show_stack_l, self_insert_l
+        bake_define ".str", show_string_l, self_insert_l
+
+        bake_define ".\"", runtime_string_print_l, compile_string_print_l
+        bake_define "(", comment_l, comment_l
+
+        bake_define "create", create_l, self_insert_l
         bake_define ":", colon_l, panic
         bake_define ";", panic, semicolon_ct_l
+
+        bake_define "find", find_l, self_insert_l
+        bake_define "execute", execute_l, self_insert_l
