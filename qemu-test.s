@@ -1,9 +1,8 @@
 ### This is meant to be a simple wrapper to allow firing up in qemu to
 ### test with, since I don't have a riscv laptop or whatever that can
 ### execute natively.
-
 ## 16550a UART, adapted from old reedos module
-
+        .option nopic
 
         .set UART_BASE, 0x10000000
         .set IER_OFFSET, 1                      # Interrupt Enable Register
@@ -16,20 +15,20 @@ init_uart:
         li t1, 1
         sll t1, t1, 24
         ## t1 is uart base addr
-        sc x0, (t1), IER_OFFSET #disable int
+        sb x0, IER_OFFSET(t1) #disable int
         li t3, 1
         sll t3, t3, 7
-        lc t3, (t1), LCR_OFFSET #mode to set baud
+        lb t3, LCR_OFFSET(t1) #mode to set baud
         li t3, 3
-        lc t3, (t1)             #LSB tx
+        lb t3, (t1)             #LSB tx
         mv t3, x0
-        lc t3, (t1), 1          #MSB rx
+        lb t3, 1(t1)          #MSB rx
         li t3, 3
-        lc t3, (t1), LCR_OFFSET #8bit words, no parity
+        lb t3, LCR_OFFSET(t1) #8bit words, no parity
         li t3, 0x7
-        lc t3, (t1), FCR_OFFSET #enable fifo
+        lb t3, FCR_OFFSET(t1) #enable fifo
         li t3, 0x3
-        lc t3, (t1), IER_OFFSET #enable interupts
+        lb t3, IER_OFFSET(t1) #enable interupts
         ret
     ## pub fn init(&mut self) {
     ##     // https://mth.st/blog/riscv-qemu/AN-491.pdf <-- inclues 16650A ref
@@ -61,7 +60,7 @@ init_uart:
 write_char_uart: # get char in a1
         li t1, 1
         sll t1, t1, 24
-        lc a1, (t1)
+        lb a1, (t1)
         ret
     ## pub fn put(&mut self, c: u8) {
     ##     let ptr = self.base_address as *mut u8;
@@ -74,13 +73,13 @@ read_char_blocking_uart:                 # put char in a0
         li t1, 1
         sll t1, t1, 24
 rcbu_loop:
-        lc t2, (t1), 5
+        lb t2, 5(t1)
         li t3, 1
         and t2, t2, t3
-        bnez rcbu_done
+        bnez t2, rcbu_done
         j rcbu_loop
 rcbu_done:
-        lc a0, (t1)
+        lb a0, (t1)
         ret
 
 ##     pub fn get(&mut self) -> Option<u8> {
@@ -99,15 +98,17 @@ rcbu_done:
 ### expected explicitly in third.s
 
         ## takes single char in a1
+        .global output_char
 output_char:
         j write_char_uart
 
         ## take ptr to NT-string in a0
+        .global output_string
 output_string:
-        subi fp, fp, 8
+        addi fp, fp, -8
         sd ra, (fp)
 out_str_loop:
-        lc a1, (a0)
+        lb a1, (a0)
         beqz a1, out_str_done
         call write_char_uart
         addi a0, a0, 1
@@ -119,25 +120,27 @@ out_str_done:
 
         ## where mtvec should send us, in direct mode
 int_handler:
-        subi fp, fp, 32
+        addi fp, fp, -32
         sd ra, (fp)
-        sd s1, (fp), 8
-        sd s2, (fp), 16
-        sd a0, (fp), 24
+        sd s1, 8(fp)
+        sd s2, 16(fp)
+        sd a0, 24(fp)
         csrr s1, mcause
         li s2, 1
         slli s2, s2, 63         #set top bit
         ori s2, s2, 0xB         #machine ext int
-        bneq s1, s2, panic
+        sub s1, s1, s2
+        .extern panic
+        bnez s1, panic
         ## rad, we can read a new character
         call read_char_blocking_uart #into a0
 
         .extern input_character
         call input_character    #from a0
         ld ra, (fp)
-        ld s1, (fp), 8
-        ld s2, (fp), 16
-        ld a0, (fp), 24
+        ld s1, 8(fp)
+        ld s2, 16(fp)
+        ld a0, 24(fp)
         addi fp, fp, 32
         mret
 
@@ -156,11 +159,14 @@ enable_ints:
         ret
 
 ### program start entry. Do setup and handoff to forth
+        .global _entry
 _entry:
         ## stack/register setup, see linker script and baked-ins
         la fp, _FORTH_MEM_TOP
         la sp, _FORTH_MEM_MID
+        .extern data_stack_next_byte
         la t0, data_stack_next_byte
+        .extern current_dict_entry
         la gp, current_dict_entry
         mv tp, x0               #not executing anything yet
         mv ra, x0               #haven't been anywhere
@@ -168,6 +174,6 @@ _entry:
         call init_uart
         call enable_ints
         ## pass it off to forth
-        .global interpret_entry
-        jr interpret_entry
+        .extern interpret_entry
+        j interpret_entry
 
