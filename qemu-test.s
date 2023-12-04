@@ -32,7 +32,7 @@ _entry:
 
 init_uart:
         li t1, 1
-        sll t1, t1, 24
+        sll t1, t1, 28
         ## t1 is uart base addr
         sb x0, IER_OFFSET(t1) #disable int
         li t3, 1
@@ -176,3 +176,4 @@ enable_ints:
         slli t1, t1, 11
         csrw mie, t1            #machine ext itnerupt enable
         ret
+        ## TODO do plic init to allow for uart inputs to come in?
