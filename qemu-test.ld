@@ -13,7 +13,6 @@ SECTIONS
 
   .text : {
     *(.text._entry)
-    *(.text.entry)
     *(.text .text.*)
   }
 

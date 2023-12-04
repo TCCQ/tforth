@@ -878,7 +878,6 @@ int_num_comptime:
         .global data_stack_next_byte
         .set data_stack_next_byte, . #what to initalize the top of the data stack to
 
-        .set null_dict_entry, 0 #bottom points to null
         .global current_dict_entry
         .set current_dict_entry, 0 #not necessary?
 
@@ -907,7 +906,7 @@ int_num_comptime:
         .text
         .endm
 
-        bake_define "+", add_l, self_insert_l, add_d, null_dict_entry
+        bake_define "+", add_l, self_insert_l, add_d, 0
         bake_define "-", sub_l, self_insert_l, sub_d, add_d
         bake_define "*", mul_l, self_insert_l, mul_d, sub_d
         bake_define "*h", mulh_l, self_insert_l, mulh_d, mul_d

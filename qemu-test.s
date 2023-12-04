@@ -10,6 +10,25 @@
         .set FCR_OFFSET, 2                      # FIFO Control Register (see uart layout in reference)
                                                 # const LSR: usize = 2; // Line Status Register (ready to rx, ready to tx signals)
 
+        .text
+### program start entry. Do setup and handoff to forth
+        .global _entry
+_entry:
+        ## stack/register setup, see linker script and baked-ins
+        la fp, _FORTH_MEM_TOP
+        la sp, _FORTH_MEM_MID
+        .extern data_stack_next_byte
+        la t0, data_stack_next_byte
+        .extern current_dict_entry
+        la gp, current_dict_entry
+        mv tp, x0               #not executing anything yet
+        mv ra, x0               #haven't been anywhere
+        ## do init not that we have stacks
+        call init_uart
+        call enable_ints
+        ## pass it off to forth
+        .extern interpret_entry
+        j interpret_entry
 
 init_uart:
         li t1, 1
@@ -157,23 +176,3 @@ enable_ints:
         slli t1, t1, 11
         csrw mie, t1            #machine ext itnerupt enable
         ret
-
-### program start entry. Do setup and handoff to forth
-        .global _entry
-_entry:
-        ## stack/register setup, see linker script and baked-ins
-        la fp, _FORTH_MEM_TOP
-        la sp, _FORTH_MEM_MID
-        .extern data_stack_next_byte
-        la t0, data_stack_next_byte
-        .extern current_dict_entry
-        la gp, current_dict_entry
-        mv tp, x0               #not executing anything yet
-        mv ra, x0               #haven't been anywhere
-        ## do init not that we have stacks
-        call init_uart
-        call enable_ints
-        ## pass it off to forth
-        .extern interpret_entry
-        j interpret_entry
-
