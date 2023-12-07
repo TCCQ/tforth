@@ -4,11 +4,6 @@
 ## 16550a UART, adapted from old reedos module
         .option nopic
 
-        .set UART_BASE, 0x10000000
-        .set IER_OFFSET, 1                      # Interrupt Enable Register
-        .set LCR_OFFSET, 3                      # Line Control Register (baud rate stuff)
-        .set FCR_OFFSET, 2                      # FIFO Control Register (see uart layout in reference)
-                                                # const LSR: usize = 2; // Line Status Register (ready to rx, ready to tx signals)
 
         .data
 welcome_msg:
@@ -32,8 +27,8 @@ _entry:
         mv tp, x0               #not executing anything yet
         mv ra, x0               #haven't been anywhere
         ## do init not that we have stacks
-        call init_uart
         call enable_ints
+        call init_uart
         call init_plic
 
         csrr t1, mstatus
@@ -50,22 +45,25 @@ _entry:
         .extern interpret_entry
         j interpret_entry
 
+        ## procedure to get the uart to behave as we expect. ripped from reedos
+        .set IER_OFFSET, 1                      # Interrupt Enable Register
+        .set LCR_OFFSET, 3                      # Line Control Register (baud rate stuff)
+        .set FCR_OFFSET, 2                      # FIFO Control Register (see uart layout in reference)
 init_uart:
         li t1, 1
         sll t1, t1, 28
         ## t1 is uart base addr
         sb x0, IER_OFFSET(t1) #disable int
         li t3, 1
-        sll t3, t3, 7
+        slli t3, t3, 7
         lb t3, LCR_OFFSET(t1) #mode to set baud
         li t3, 3
         lb t3, (t1)             #LSB tx
-        mv t3, x0
-        lb t3, 1(t1)          #MSB rx
+        lb x0, 1(t1)            #MSB rx
         li t3, 3
         lb t3, LCR_OFFSET(t1) #8bit words, no parity
         li t3, 0x7
-        lb t3, FCR_OFFSET(t1) #enable fifo
+        lb t3, FCR_OFFSET(t1) #enable and clear fifo
         li t3, 0x3
         lb t3, IER_OFFSET(t1) #enable interupts
         ret
