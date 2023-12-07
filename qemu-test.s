@@ -10,10 +10,18 @@
         .set FCR_OFFSET, 2                      # FIFO Control Register (see uart layout in reference)
                                                 # const LSR: usize = 2; // Line Status Register (ready to rx, ready to tx signals)
 
+        .data
+welcome_msg:
+        .asciz "Hello and Welcome to third!\n"
+
         .text
 ### program start entry. Do setup and handoff to forth
         .global _entry
 _entry:
+        ## just to be sure, only hart0 is allowed
+        csrr t1, mhartid
+        bnez t1, panic
+
         ## stack/register setup, see linker script and baked-ins
         la fp, _FORTH_MEM_TOP
         la sp, _FORTH_MEM_MID
@@ -26,7 +34,19 @@ _entry:
         ## do init not that we have stacks
         call init_uart
         call enable_ints
+        call init_plic
+
+        csrr t1, mstatus
+        li t2, 1
+        slli t2, t2, 3
+        or t1, t1, t2
+        csrw mstatus, t1
+        ## enable interupts
+
         ## pass it off to forth
+        la a0, welcome_msg
+        call output_string
+
         .extern interpret_entry
         j interpret_entry
 
@@ -49,48 +69,113 @@ init_uart:
         li t3, 0x3
         lb t3, IER_OFFSET(t1) #enable interupts
         ret
-    ## pub fn init(&mut self) {
-    ##     // https://mth.st/blog/riscv-qemu/AN-491.pdf <-- inclues 16650A ref
-    ##     let ptr = self.base_address as *mut u8;
-    ##     // Basic semantics:
-    ##     // `ptr` is a memory address.
-    ##     // We want to write certain values to 'registers' located
-    ##     // at specific offsets, calculated by ptr + register_offset.
-    ##     // Then, we perform volatile writes to that location in memory
-    ##     // to configure the specific parameters of the Qemu virt machine
-    ##     // uart device without altering our base address.
-    ##     unsafe {
-    ##         // Disable interrupts first.
-    ##         ptr.add(IER).write_volatile(0x0);
-    ##         // Mode in order to set baud rate.
-    ##         ptr.add(LCR).write_volatile(1 << 7);
-    ##         // baud rate of 38.4k
-    ##         ptr.add(0).write_volatile(0x03); // LSB (tx side)
-    ##         ptr.add(1).write_volatile(0x00); // MST (rx side)
-    ##         // 8 bit words (no parity)
-    ##         ptr.add(LCR).write_volatile(3);
-    ##         // Enable and clear FIFO
-    ##         ptr.add(FCR).write_volatile(1 << 0 | 3 << 1);
-    ##         // Enable tx and rx interrupts
-    ##         ptr.add(IER).write_volatile(1 << 1 | 1 << 0);
-    ##     }
-    ## }
+
+        ## set out machine csrs to allow uart input events and that's it
+enable_ints:
+        csrw medeleg, x0
+        csrw mideleg, x0
+        la t1, int_handler
+        srli t1, t1, 2
+        slli t1, t1, 2          #zero bottom two bits
+        csrw mtvec, t1          #set handler
+        ## csrw stvec, t1          # for both modes
+        li t1, 1
+        slli t1, t1, 11
+        csrw mie, t1            #machine ext itnerupt enable
+        ## srli t1, t1, 2
+        ## csrw sie, t1            #for both modes
+        ret
+        ## TODO do plic init to allow for uart inputs to come in?
+
+init_plic:
+        li t1, 0x0c
+        slli t1, t1, 24
+        ## t1 has plic base address
+        li t2, 1
+        sw t2, 40(t1)           #word gran. enable for UART irq (priority 1)
+        li t2, 1
+        slli t2, t2, 10         #uart irq bit mask
+        lui t3, 0x2             #0x2000, base for enable bits for context 0
+        add t3, t1, t3
+        sw t2, (t3)             #mask location for hart 0, 0x2000 + 0x100 * hartid
+        ## enabled for hart 0
+        lui t3, 0x200           #get 0x200000
+        add t3, t1, t3
+        sw x0, (t3)             #has priority threshold 0
+        ret
+
+        ## where mtvec should send us, in direct mode
+int_handler:
+        addi fp, fp, -32
+        sd ra, (fp)
+        sd s1, 8(fp)
+        sd s2, 16(fp)
+        sd a0, 24(fp)
+        csrr s1, mcause
+        li s2, 1
+        slli s2, s2, 63         #set top bit
+        ori s2, s2, 0xB         #machine ext int
+        sub s1, s1, s2
+        .extern panic
+        bnez s1, panic
+
+        call plic_claim
+        addi s1, a0, -10         #uart irq
+        bnez s1, panic
+
+        ## rad, we can read a new character
+        call read_char_blocking_uart #into a0
+
+        .extern input_character
+        call input_character    #from a0
+
+        li a0, 10
+        call plic_complete
+
+        ld ra, (fp)
+        ld s1, 8(fp)
+        ld s2, 16(fp)
+        ld a0, 24(fp)
+        addi fp, fp, 32
+        mret
+
+
+        ## this and the next one have hart id offsets, but we are
+        ## fixed to hart 0, so we don't bother. They also use s1-2
+        ## without care since they are only ever called from inside
+        ## the int_handler
+
+        ## places irq number in a0. redudant since there should only
+        ## ever be one
+plic_claim:
+        ## only a single hart, but we need to do it anyway
+        li s1, 0xc0
+        slli s1, s1, 12         #base addr
+        lui s2, 0x200
+        addi s2, s2, 4
+        add s1, s1, s2          #base + 0x200004
+        lw a0, (s1)
+        ret
+
+        ## sakes irq number in a0
+plic_complete:
+        li s1, 0xc0
+        slli s1, s1, 12         #base addr
+        lui s2, 0x200
+        addi s2, s2, 4
+        add s1, s1, s2          #base + 0x200004
+        sw a0, (s1)
+        ret
 
 write_char_uart: # get char in a1
         li t1, 1
-        sll t1, t1, 24
-        lb a1, (t1)
+        sll t1, t1, 28
+        sb a1, (t1)
         ret
-    ## pub fn put(&mut self, c: u8) {
-    ##     let ptr = self.base_address as *mut u8;
-    ##     unsafe {
-    ##         ptr.add(0).write_volatile(c);
-    ##     }
-    ## }
 
 read_char_blocking_uart:                 # put char in a0
         li t1, 1
-        sll t1, t1, 24
+        sll t1, t1, 28
 rcbu_loop:
         lb t2, 5(t1)
         li t3, 1
@@ -100,19 +185,6 @@ rcbu_loop:
 rcbu_done:
         lb a0, (t1)
         ret
-
-##     pub fn get(&mut self) -> Option<u8> {
-##         let ptr = self.base_address as *mut u8;
-##         unsafe {
-##             if ptr.add(5).read_volatile() & 1 == 0 {
-##                 // The DR bit is 0, meaning no data
-##                 None
-##             } else {
-##                 // The DR bit is 1, meaning data!
-##                 Some(ptr.add(0).read_volatile())
-##             }
-##         }
-##     }
 
 ### expected explicitly in third.s
 
@@ -133,47 +205,6 @@ out_str_loop:
         addi a0, a0, 1
         j out_str_loop
 out_str_done:
-        sd ra, (fp)
+        ld ra, (fp)
         addi fp, fp, 8
         ret
-
-        ## where mtvec should send us, in direct mode
-int_handler:
-        addi fp, fp, -32
-        sd ra, (fp)
-        sd s1, 8(fp)
-        sd s2, 16(fp)
-        sd a0, 24(fp)
-        csrr s1, mcause
-        li s2, 1
-        slli s2, s2, 63         #set top bit
-        ori s2, s2, 0xB         #machine ext int
-        sub s1, s1, s2
-        .extern panic
-        bnez s1, panic
-        ## rad, we can read a new character
-        call read_char_blocking_uart #into a0
-
-        .extern input_character
-        call input_character    #from a0
-        ld ra, (fp)
-        ld s1, 8(fp)
-        ld s2, 16(fp)
-        ld a0, 24(fp)
-        addi fp, fp, 32
-        mret
-
-        ## set out machine csrs to allow uart input events and that's it
-enable_ints:
-        csrw medeleg, x0
-        csrw mideleg, x0
-
-        la t1, int_handler
-        srli t1, t1, 2
-        slli t1, t1, 2          #zero bottom two bits
-        csrw mtvec, t1          #set handler
-        li t1, 1
-        slli t1, t1, 11
-        csrw mie, t1            #machine ext itnerupt enable
-        ret
-        ## TODO do plic init to allow for uart inputs to come in?
