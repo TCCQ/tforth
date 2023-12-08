@@ -77,27 +77,41 @@ enable_ints:
         slli t1, t1, 2          #zero bottom two bits
         csrw mtvec, t1          #set handler
         ## csrw stvec, t1          # for both modes
-        li t1, 1
-        slli t1, t1, 11
-        csrw mie, t1            #machine ext itnerupt enable
-        ## srli t1, t1, 2
-        ## csrw sie, t1            #for both modes
-        ret
-        ## TODO do plic init to allow for uart inputs to come in?
+        li t1, 0xAAA
+        csrw mie, t1            #machine ext interrupt enable
 
+        ## try to enable a timer, see if we can get an int there
+        lui t1, 0x2000          #clint base
+        li t3, 0xBFF8
+        add t3, t1, t3
+        ld t2, (t3)             #mtime
+        li t3, 0x4000
+        add t3, t1, t3
+        lui t4, 0x100
+        add t2, t2, t4
+        sd t2, (t3)             #writ mtimecmp
+
+
+        ret
+
+        ## try to enable uart (10) with priority 1, and set hart 0 to
+        ## have threshold 0, all in context 0 (hart 0, M mode)
 init_plic:
         li t1, 0x0c
         slli t1, t1, 24
         ## t1 has plic base address
+
         li t2, 1
         sw t2, 40(t1)           #word gran. enable for UART irq (priority 1)
+
         li t2, 1
         slli t2, t2, 10         #uart irq bit mask
         lui t3, 0x2             #0x2000, base for enable bits for context 0
         add t3, t1, t3
-        sw t2, (t3)             #mask location for hart 0, 0x2000 + 0x100 * hartid
+        sw t2, (t3)             #mask location for hart 0
         ## enabled for hart 0
-        lui t3, 0x200           #get 0x200000
+
+        lui t3, 0x200           #get 0x200000, threshold for context 0
         add t3, t1, t3
         sw x0, (t3)             #has priority threshold 0
         ret
@@ -151,7 +165,7 @@ plic_claim:
         slli s1, s1, 12         #base addr
         lui s2, 0x200
         addi s2, s2, 4
-        add s1, s1, s2          #base + 0x200004
+        add s1, s1, s2          #base + 0x201004
         lw a0, (s1)
         ret
 
