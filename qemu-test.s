@@ -4,6 +4,78 @@
 ## 16550a UART, adapted from old reedos module
         .option nopic
 
+        .macro save_all_regs_to_fp
+        addi  fp,   fp,  -256
+        sd    x0,   0(fp)
+        sd    x1,   8(fp)
+        sd    x2,   16(fp)
+        sd    x3,   24(fp)
+        sd    x4,   32(fp)
+        sd    x5,   40(fp)
+        sd    x6,   48(fp)
+        sd    x7,   56(fp)
+        sd    x8,   64(fp)
+        sd    x9,   72(fp)
+        sd    x10,  80(fp)
+        sd    x11,  88(fp)
+        sd    x12,  96(fp)
+        sd    x13,  104(fp)
+        sd    x14,  112(fp)
+        sd    x15,  120(fp)
+        sd    x16,  128(fp)
+        sd    x17,  136(fp)
+        sd    x18,  144(fp)
+        sd    x19,  152(fp)
+        sd    x20,  160(fp)
+        sd    x21,  168(fp)
+        sd    x22,  176(fp)
+        sd    x23,  184(fp)
+        sd    x24,  192(fp)
+        sd    x25,  200(fp)
+        sd    x26,  208(fp)
+        sd    x27,  216(fp)
+        sd    x28,  224(fp)
+        sd    x29,  232(fp)
+        sd    x30,  240(fp)
+        sd    x31,  248(fp)
+        .endm
+
+        .macro restore_all_regs_from_fp
+        ld    x0,   0(fp)
+        ld    x1,   8(fp)
+        ld    x2,   16(fp)
+        ld    x3,   24(fp)
+        ld    x4,   32(fp)
+        ld    x5,   40(fp)
+        ld    x6,   48(fp)
+        ld    x7,   56(fp)
+        ld    x8,   64(fp)
+        ld    x9,   72(fp)
+        ld    x10,  80(fp)
+        ld    x11,  88(fp)
+        ld    x12,  96(fp)
+        ld    x13,  104(fp)
+        ld    x14,  112(fp)
+        ld    x15,  120(fp)
+        ld    x16,  128(fp)
+        ld    x17,  136(fp)
+        ld    x18,  144(fp)
+        ld    x19,  152(fp)
+        ld    x20,  160(fp)
+        ld    x21,  168(fp)
+        ld    x22,  176(fp)
+        ld    x23,  184(fp)
+        ld    x24,  192(fp)
+        ld    x25,  200(fp)
+        ld    x26,  208(fp)
+        ld    x27,  216(fp)
+        ld    x28,  224(fp)
+        ld    x29,  232(fp)
+        ld    x30,  240(fp)
+        ld    x31,  248(fp)
+        addi  fp,   fp,  256
+        .endm
+
 
         .data
 welcome_msg:
@@ -26,8 +98,8 @@ _entry:
         la gp, current_dict_entry
         mv tp, x0               #not executing anything yet
         mv ra, x0               #haven't been anywhere
-        ## do init not that we have stacks
-        call enable_ints
+        ## do init now that we have stacks
+        call enable_ints        #specifically which we want
         call init_uart
         call init_plic
 
@@ -36,14 +108,16 @@ _entry:
         slli t2, t2, 3
         or t1, t1, t2
         csrw mstatus, t1
-        ## enable interupts
+        ## globally enable interrupts
 
         ## pass it off to forth
         la a0, welcome_msg
-        call output_string
+        ## call output_string
 
         .extern interpret_entry
         j interpret_entry
+        mret
+
 
         ## procedure to get the uart to behave as we expect. ripped from reedos
         .set IER_OFFSET, 1                      # Interrupt Enable Register
@@ -56,16 +130,16 @@ init_uart:
         sb x0, IER_OFFSET(t1) #disable int
         li t3, 1
         slli t3, t3, 7
-        lb t3, LCR_OFFSET(t1) #mode to set baud
+        sb t3, LCR_OFFSET(t1) #mode to set baud
         li t3, 3
-        lb t3, (t1)             #LSB tx
-        lb x0, 1(t1)            #MSB rx
+        sb t3, (t1)             #LSB tx
+        sb x0, 1(t1)            #MSB rx
         li t3, 3
-        lb t3, LCR_OFFSET(t1) #8bit words, no parity
+        sb t3, LCR_OFFSET(t1) #8bit words, no parity
         li t3, 0x7
-        lb t3, FCR_OFFSET(t1) #enable and clear fifo
+        sb t3, FCR_OFFSET(t1) #enable and clear fifo
         li t3, 0x3
-        lb t3, IER_OFFSET(t1) #enable interupts
+        sb t3, IER_OFFSET(t1) #enable interupts
         ret
 
         ## set out machine csrs to allow uart input events and that's it
@@ -76,22 +150,9 @@ enable_ints:
         srli t1, t1, 2
         slli t1, t1, 2          #zero bottom two bits
         csrw mtvec, t1          #set handler
-        ## csrw stvec, t1          # for both modes
-        li t1, 0xAAA
-        csrw mie, t1            #machine ext interrupt enable
-
-        ## try to enable a timer, see if we can get an int there
-        lui t1, 0x2000          #clint base
-        li t3, 0xBFF8
-        add t3, t1, t3
-        ld t2, (t3)             #mtime
-        li t3, 0x4000
-        add t3, t1, t3
-        lui t4, 0x100
-        add t2, t2, t4
-        sd t2, (t3)             #writ mtimecmp
-
-
+        li t1, 1
+        slli t1, t1, 11
+        csrw mie, t1            #machine ext int enable
         ret
 
         ## try to enable uart (10) with priority 1, and set hart 0 to
@@ -106,23 +167,19 @@ init_plic:
 
         li t2, 1
         slli t2, t2, 10         #uart irq bit mask
-        lui t3, 0x2             #0x2000, base for enable bits for context 0
+        li t3, 0x2000           #0x2000, base for enable bits for context 0
         add t3, t1, t3
-        sw t2, (t3)             #mask location for hart 0
-        ## enabled for hart 0
+        sw t2, (t3)             #mask location for hart 0, S mode
 
-        lui t3, 0x200           #get 0x200000, threshold for context 0
+        li t3, 0x200000         #get 0x200000, threshold for context 0
         add t3, t1, t3
         sw x0, (t3)             #has priority threshold 0
         ret
 
-        ## where mtvec should send us, in direct mode
+        .balign 0x8
+        ## where stvec should send us, in direct mode
 int_handler:
-        addi fp, fp, -32
-        sd ra, (fp)
-        sd s1, 8(fp)
-        sd s2, 16(fp)
-        sd a0, 24(fp)
+        save_all_regs_to_fp
         csrr s1, mcause
         li s2, 1
         slli s2, s2, 63         #set top bit
@@ -137,19 +194,16 @@ int_handler:
 
         ## rad, we can read a new character
         call read_char_blocking_uart #into a0
-
+        mv a1, a0
+        call write_char_uart    #echo from a1
         .extern input_character
         call input_character    #from a0
 
         li a0, 10
         call plic_complete
 
-        ld ra, (fp)
-        ld s1, 8(fp)
-        ld s2, 16(fp)
-        ld a0, 24(fp)
-        addi fp, fp, 32
-        mret
+        restore_all_regs_from_fp
+        sret
 
 
         ## this and the next one have hart id offsets, but we are
@@ -161,19 +215,19 @@ int_handler:
         ## ever be one
 plic_claim:
         ## only a single hart, but we need to do it anyway
-        li s1, 0xc0
-        slli s1, s1, 12         #base addr
-        lui s2, 0x200
+        li s1, 0x0c
+        slli s1, s1, 24         #base addr
+        li s2, 0x200000
         addi s2, s2, 4
-        add s1, s1, s2          #base + 0x201004
+        add s1, s1, s2          #base + 0x200004
         lw a0, (s1)
         ret
 
         ## sakes irq number in a0
 plic_complete:
-        li s1, 0xc0
-        slli s1, s1, 12         #base addr
-        lui s2, 0x200
+        li s1, 0x0c
+        slli s1, s1, 24         #base addr
+        li s2, 0x200000
         addi s2, s2, 4
         add s1, s1, s2          #base + 0x200004
         sw a0, (s1)
