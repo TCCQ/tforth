@@ -171,6 +171,13 @@ init_plic:
         add t3, t1, t3
         sw t2, (t3)             #mask location for hart 0, S mode
 
+        ## li t3, 0x1000
+        ## add t3, t1, t3
+        ## sw x0, (t1)             #Eliminate the pending bit for the
+        ##                         #first 32 sources this is just to
+        ##                         #prevent the uart from ghost firing,
+        ##                         #so the rest is overkill.
+
         li t3, 0x200000         #get 0x200000, threshold for context 0
         add t3, t1, t3
         sw x0, (t3)             #has priority threshold 0
@@ -187,23 +194,28 @@ int_handler:
         sub s1, s1, s2
         .extern panic
         bnez s1, panic
+        ## We know it's a ext interrupt
 
         call plic_claim
+        beqz a0, ih_plic_int_zero #dummy, just mark as completed
         addi s1, a0, -10         #uart irq
         bnez s1, panic
 
         ## rad, we can read a new character
-        call read_char_blocking_uart #into a0
+        call read_char_nonblocking_uart #into a0
+        beqz a0, ih_ghost_int
         mv a1, a0
         call write_char_uart    #echo from a1
         .extern input_character
         call input_character    #from a0
 
+ih_ghost_int:                   #ignore this, just mark as complete
         li a0, 10
+ih_plic_int_zero:
         call plic_complete
 
         restore_all_regs_from_fp
-        sret
+        mret
 
 
         ## this and the next one have hart id offsets, but we are
@@ -239,17 +251,24 @@ write_char_uart: # get char in a1
         sb a1, (t1)
         ret
 
-read_char_blocking_uart:                 # put char in a0
+        ## I really want this call to be blocking, which is easy to do
+        ## by spinning on the the ready bit, but for some reason I am
+        ## getting ghost pings from the plic. I still only want to use
+        ## this in response to an interrupt, so it should be basically
+        ## the same, with the change that you ca't type a null, which
+        ## seems like not a huge sacrifice.
+read_char_nonblocking_uart:                 # put char in a0, or zero if none
         li t1, 1
-        sll t1, t1, 28
-rcbu_loop:
+        sll t1, t1, 28          #base addr
+## rcnu_loop:
         lb t2, 5(t1)
         li t3, 1
         and t2, t2, t3
-        bnez t2, rcbu_done
-        j rcbu_loop
-rcbu_done:
+        beqz t2, rcnu_fail      #if the ready bit isn't set, do nothing
         lb a0, (t1)
+        ret
+rcnu_fail:
+        mv a0, x0
         ret
 
 ### expected explicitly in third.s
