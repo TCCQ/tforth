@@ -376,7 +376,7 @@ comment_done:
         ## does a length check, copies drydock to buffer, and resets cursor
 commit_line:
         mv t1, x0
-cl_loop:
+cl_loop:                        #TODO this is really slow
         la t3, line_dry_dock
         add t3, t3, t1
         lb t2, (t3)
@@ -384,13 +384,16 @@ cl_loop:
         add t3, t3, t1
         sb t2, (t3)
         addi t1, t1, 1
-        seqz t2, t2
-        bnez t2, cl_done
+        beqz t2, cl_done
         lui t2, 1               #4096
         bge t1, t2, panic
         j cl_loop
 cl_done:
+        ## la t1, line_dry_dock
+        ## sb x0, (t1)         #not strictly necessary
         la t1, line_offset
+        sd x0, (t1)
+        la t1, line_dd_offset
         sd x0, (t1)
         ret
 
@@ -402,15 +405,20 @@ cl_done:
         ##
         ## a0 is said pointer. It is incremented to point to the first
         ## unconsumed character, after a single null or space
+        ##
+        ## This function also places the length of the word (without
+        ## space/null) in t2
 read_word_into_buffer:
         mv t1, x0
         add t2, t1, a0
 rwib_loop:
         lb t3, (t2)
-        sb t3, word_buffer, t1
+        la t2, word_buffer
+        add t2, t2, t1
+        sb t3, (t2)
         addi t1, t1, 1
-        li t3, 255
-        bge t1, t3, panic
+        li t4, 255
+        bge t1, t4, panic
         add t2, t1, a0
         beqz t3, rwib_done           #null
         li t4, 0x20
@@ -419,7 +427,9 @@ rwib_loop:
         j rwib_loop
 rwib_done:
         addi t2, t1, -1          #cursor over last char
-        sb x0, word_buffer, t2
+        la t4, word_buffer
+        add t1, t4, t2
+        sb x0, (t1)
         ## normalize to null terminated
         add a0, t1, a0
         ret
@@ -451,7 +461,9 @@ gws_word_or_null:
         call read_word_into_buffer
         ## a0 now has new ptr
         mv ra, t6
-        sub t2, t3, t1         #regain offset
+        la t3, line_offset
+        ld t3, (t3)
+        add t2, t3, t2          #rwib returns the consumed length in t2
         la t3, line_offset
         sd t2, (t3)             #update offset
         ret
@@ -471,7 +483,8 @@ gws_wait_loop:
         ## whatever our input is, we just got a new character. Gets the new character in a0
         .global input_character
 input_character:
-        addi sp, sp, -32
+        addi sp, sp, -32        #TODO can we be used t regs now, since
+                                #we are now saving everything on int?
         sd s1, 24(sp)
         sd s2, 16(sp)
         sd s3, 8(sp)
@@ -480,7 +493,7 @@ input_character:
         li s1, 0x0A             #newline
         sub s2, a0, s1
         beqz s2, ic_commit
-        li s1, 0x0C             #carriage return
+        li s1, 0x0D             #carriage return
         sub s2, a0, s1
         beqz s2, ic_commit
         li s1, 0x03             #end of text
@@ -503,7 +516,7 @@ input_character:
         add s4, s1, s3
         sb a0, (s4)             #write char
         addi s3, s3, 1
-        ld s3, (s2)             #update offset
+        sd s3, (s2)             #update offset
         j ic_done
 ic_commit:
         ## we finished a line, we can commit if the reader is ready, otherwise just ignore
@@ -523,6 +536,10 @@ ic_backspace:
         addi s3, s3, -1
         sd s3, (s2)             #decrement offset
 ic_done:
+        ld s1, 24(sp)
+        ld s2, 16(sp)
+        ld s3, 8(sp)
+        ld s4, (sp)
         addi sp, sp, 32
         ret
 
@@ -825,6 +842,13 @@ literal_rt_l:
 interpret_entry:
         addi fp, fp, -8
         sd ra, (fp)
+        ## we need to set the initial line_offset to non-zero, so the
+        ## first commits still trigger a offset change
+        la t1, line_buffer
+        sh x0, (t1)             #write two bytes of zeros, to safely allow for a irregular offset of 1 to start
+        la t1, line_offset
+        li t2, 1
+        sd t2, (t1)              #non-zero so first commit changes the offset
 int_loop:
         call get_word_safe
         ## there is a word in the buffer now, no matter what it is
