@@ -112,7 +112,7 @@ _entry:
 
         ## pass it off to forth
         la a0, welcome_msg
-        ## call output_string
+        call output_string
 
         .extern interpret_entry
         j interpret_entry
@@ -195,25 +195,25 @@ int_handler:
         .extern panic
         bnez s1, panic
         ## We know it's a ext interrupt
-
         call plic_claim
         beqz a0, ih_plic_int_zero #dummy, just mark as completed
         addi s1, a0, -10         #uart irq
         bnez s1, panic
-
         ## rad, we can read a new character
         call read_char_nonblocking_uart #into a0
         beqz a0, ih_ghost_int
         mv a1, a0
+        li t1, 0x7f
+        bne a1, t1, ih_nonbackspace
+        li a1, 0x08             #backspace instead of delete
+ih_nonbackspace:
         call write_char_uart    #echo from a1
         .extern input_character
         call input_character    #from a0
-
 ih_ghost_int:                   #ignore this, just mark as complete
         li a0, 10
 ih_plic_int_zero:
         call plic_complete
-
         restore_all_regs_from_fp
         mret
 

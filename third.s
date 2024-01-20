@@ -67,7 +67,7 @@ line_ready:                     #is the consumer ready for the commit to happen?
 
         .data
 succ_text:
-        .asciz "ok.\n"
+        .asciz " ok.\n"
 
 ### TODO you can expect `output_char` and `output_string`, but you
 ### should check their calling convention.
@@ -274,20 +274,23 @@ show_l:                         # (a -- ) print the top of the stack as a number
         ret
 
 show_stack_l:                   # ( -- ) print the stack from the bottom to the top
-        la t1, _FORTH_MEM_MID   # TODO make sure this matches the init
-        addi fp, fp, -8
+        addi fp, fp, -16
         sd ra, (fp)
+        sd s1, 8(fp)
+        la s1, _FORTH_MEM_MID   # TODO make sure this matches the init
+        addi s1, s1, -8
 ss_loop:
-        ld a0, (t1)
+        ld a0, (s1)
         call output_num
         li a1, 0x20             #space
         call output_char
-        addi t1, t1, -8
-        blt t1, sp, ss_done
+        addi s1, s1, -8
+        blt s1, sp, ss_done
         j ss_loop
 ss_done:
         ld ra, (fp)
-        addi fp, fp, 8
+        ld s1, 8(fp)
+        addi fp, fp, 16
         ret
 
 show_string_l:                  # ( addr -- ) print a NT string from addr
@@ -375,6 +378,10 @@ comment_done:
 
         ## does a length check, copies drydock to buffer, and resets cursor
 commit_line:
+        li a1, 0x0a             #newline
+        mv t5, ra               #TODO unsafe, take the performance hit and be consistent
+        call output_char
+        mv ra, t5
         mv t1, x0
 cl_loop:                        #TODO this is really slow
         la t3, line_dry_dock
@@ -502,7 +509,7 @@ input_character:
         li s1, 0x04             #end of transmission
         sub s2, a0, s1
         beqz s2, ic_commit
-        li s1, 0x08             #backspace
+        li s1, 0x7f             #backspace (DEL)
         sub s2, a0, s1
         beqz s2, ic_backspace
         la s1, line_dd_offset   #test and prevent overwrite. Still allow commit and backspace
@@ -557,7 +564,7 @@ cwl_done:
         addi a0, a0, 1          #space for null
         ret
 
-        ## output a number given in a0 as a string, clobbers a1
+        ## output a number given in a0 as a string, clobbers a0 and a1
         ##
         ## we do some stack stuff to reverse the digit order, since
         ## it's nicer to break down LSD first, but we need to print
@@ -568,9 +575,8 @@ output_num:
         addi fp, fp, -24
         sd ra, (fp)
         sd s1, 8(fp)
-        sd s2, 16(fp)
+        sd sp, 16(fp)
         li s1, 10
-        mv s2, sp               #save original stack location so we know when to stop
         bgez a0, on_loop
         ## negative val, emit minus and neg val
         li a1, 0x2D
@@ -581,24 +587,24 @@ on_loop:                        #safely positive, don't worry about signs
         addi a1, a1, 0x30       #binary val to ascii val
         addi sp, sp, -8
         sd a1, (sp)
-        div a1, a1, s1
-        beqz a1, on_pre_print
+        div a0, a0, s1
+        beqz a0, on_pre_print
         j on_loop
 on_pre_print:
-        ## the main stack from s2 down to sp has each ascii digit in a word, print and pop
-        mv s1, s2
-        addi s1, s1, -8
+        ## the main stack from the initial stack val down to new sp
+        ## has each ascii digit in a word, print and pop
+        mv s1, sp
+        ld sp, 16(fp)
 on_print_loop:
         ld a1, (s1)
         call output_char
-        addi s1, s1, -8
-        blt s1, sp, on_done
+        addi s1, s1, 8
+        bge s1, sp, on_done
         j on_print_loop
 on_done:
-        mv sp, s2               #pop all at once
         ld ra, (fp)
         ld s1, 8(fp)
-        ld s2, 16(fp)
+        ld sp, 16(fp)
         addi fp, fp, 24
         ret
 
@@ -764,6 +770,7 @@ is_num_done:
         ## overflow or is_number checking
 string_to_num:
         lb t6, (a0)
+        mv t5, x0
         addi t6, t6, -0x2D       #minus
         seqz t6, t6             #sign bit
         beqz t6, stn_loop
@@ -861,7 +868,7 @@ int_loop:
         ld t1, (t1)
         bnez t1, int_comptime
         ## int_runtime #TODO where should tp point during top-level runtime?
-        addi t2, a0, 8
+        ld t2, 8(a0)
         jalr ra, t2
         la a0, succ_text
         call output_string
@@ -922,10 +929,10 @@ int_num_comptime:
         ## head of the entry
         .set current_dict_entry, .
         .set \entry_sym, .
-        .int 1b                 #name (local)
-        .int \rcode
-        .int \ccode
-        .int \prior_entry_sym            #backlink
+        .dc.a 1b                 #name (local)
+        .dc.a \rcode
+        .dc.a \ccode
+        .dc.a \prior_entry_sym            #backlink
         .set data_stack_next_byte, .
         .text
         .endm
